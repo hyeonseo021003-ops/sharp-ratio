@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
+from torch.utils.data import TensorDataset, DataLoader
 
 # 데이터 칼럼명 수정
 
@@ -28,15 +29,9 @@ all_cols = feature_cols + target_col
 df_copy = df[all_cols].copy()
 
 # 3. 혹시 모를 결측치(NaN) 0으로 채우기
-df_copy = df_copy.fillna(0)
-
-
-feature_cols = [col for col in df_copy.columns if col != 'Return']
+# df_copy = df_copy.fillna(0)
 
 #------------------------------------------------------------------------------
-
-# 정규화
-# 2. 스케일링 적용
 
 # 최적화 및 학습 (GPU 최적화 버전)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,14 +66,14 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # train data set 준비
 
-# 0. 설정 값 정의
-PER_SET = 10000
-TRAIN_SIZE = 600000  # 100팀
-VAL_SIZE = 200000     # 15팀 (5만 근사치 위해 3000의 배수인 45000 선택하거나, 아래처럼 자동 계산)
-TEST_SIZE = 200000    # 15팀
+# 0. 설정 값 정의 
+PER_SET = 1000
+TRAIN_SIZE = 300000  # 30팀
+VAL_SIZE = 200000     # 20팀
+TEST_SIZE = 200000    # 20팀
 
 # 실제 팀 수 계산 
-train_sets = TRAIN_SIZE // PER_SET  # 100팀
+train_sets = TRAIN_SIZE // PER_SET  # 30팀
 val_sets = VAL_SIZE // PER_SET 
 test_sets = TEST_SIZE // PER_SET 
 
@@ -88,15 +83,15 @@ all_indices = np.arange(len(df_copy))
 # 학습용 추출
 train_idx = np.random.choice(all_indices, size=TRAIN_SIZE, replace=False)
 
-# 학습용 제외한 나머지
+# 학습용 제외한 나머지 np.setdiff1d: 차집합
 remaining_idx = np.setdiff1d(all_indices, train_idx)
 
 # 나머지 중 검증용 추출
-val_idx = np.random.choice(remaining_idx, size=val_sets * PER_SET, replace=False)
+val_idx = np.random.choice(remaining_idx, size=VAL_SIZE, replace=False)
 
 # 나머지 중 테스트용 추출
 remaining_idx = np.setdiff1d(remaining_idx, val_idx)
-test_idx = np.random.choice(remaining_idx, size=test_sets * PER_SET, replace=False)
+test_idx = np.random.choice(remaining_idx, size=TEST_SIZE, replace=False)
 
 # 2. 3D 텐서 변환 함수 (반복 작업 최적화)
 def make_3d_tensor(indices, num_sets):
@@ -133,6 +128,7 @@ def criterion(probs_3d, x_3d, y_3d):
     actual_ret_3d = y_3d.squeeze(-1)   # 실제 수익률 (3D로 맞춤)
     
     # 전략 수익률 계산 (모델이 승인하면 실제 수익률, 거절하면 국채 수익률)
+    # 끝까지 스무스하게 하는건?
     individual_returns = (probs_3d * actual_ret_3d) + ((1 - probs_3d) * r_tsy_3d)
     
     # 팀별(Batch) 평균 및 표준편차 계산
@@ -163,7 +159,7 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
         
         # Forward: 데이터를 모델에 입력하고 승인 확률 추출
         t_probs_flat = model(train_x.view(-1, 51))
-        t_probs_3d = t_probs_flat.view(-1, 10000, 2)[:, :, 1]
+        t_probs_3d = t_probs_flat.view(-1, 1000, 2)[:, :, 1]
         
         # Loss 계산: 샤프 지수 기반의 손실함수 최적화
         t_loss = criterion(t_probs_3d, train_x, train_y)
@@ -178,7 +174,7 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
         with torch.no_grad():
             # 검증용 데이터(20팀)로 현재 모델 실력 측정
             v_probs_flat = model(val_x.view(-1, 51))
-            v_probs_3d = v_probs_flat.view(-1, 10000, 2)[:, :, 1]
+            v_probs_3d = v_probs_flat.view(-1, 1000, 2)[:, :, 1]
             v_loss = criterion(v_probs_3d, val_x, val_y)
             
         # 매 에폭의 결과(Loss) 저장
@@ -200,11 +196,7 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
             print(' 학습 종료 ')
             break
 
-        # best 모델 복원
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-
-    
+   
             
 
     return train_loss_history, val_loss_history
@@ -221,14 +213,14 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
 def get_model_predictions(test_x_3d, test_y_3d):
     model.eval() # 평가모드
     with torch.no_grad(): # 기울기 계산 금지 - 메모리, 속도
-        # (20, 10000, 51) -> (200000, 51)로 펴기
+        # (20, 10000, 51) -> (20000, 51)로 펴기
         x_flat = test_x_3d.view(-1, 51)
         
-        # 모델 통과 (결과: 200000,)
+        # 모델 통과 (결과: 20000,)
         probs_flat = model(x_flat)
         
-        # 원래 구조로 복구 (결과: 20, 10000)
-        probs_3d_full = probs_flat.view(-1, 10000,2)
+        # 원래 구조로 복구 (결과: 20, 1000)
+        probs_3d_full = probs_flat.view(-1, 1000,2)
         probs_3d = probs_3d_full[:, :, 1] # 승인 확률만 추출
 
         r_tsy_3d = test_x_3d[:, :, -1] # 국채 수익률 분리
@@ -237,11 +229,11 @@ def get_model_predictions(test_x_3d, test_y_3d):
     # 방법 A: argmax 사용 (둘 중 큰 것 선택, threshold 무시됨)
     # dim=-1은 마지막 차원(2개 점수) 중 큰 인덱스를 고름
     #        = (probs_3d >= 0.5).float() 
-    decisions = torch.argmax(probs_3d_full, dim=-1).float() # 결과: (20, 10000)
+    decisions = torch.argmax(probs_3d_full, dim=-1).float() # 결과: (20, 1000)
     
     # 3. 개별 수익률 결정
     # 승인(1)인 사람은 actual_loan_ret을, 미승인(0)인 사람은 r_tsy를 가짐
-    # 개개인의 수익률 (20, 10000)행렬을 결과값으로
+    # 개개인의 수익률 (20, 1000)행렬을 결과값으로
     individual_returns = (decisions * actual_ret_3d) + ((1 - decisions) * r_tsy_3d)
     
     # 4. 3000명의 평균 수익률과 표준편차 계산
