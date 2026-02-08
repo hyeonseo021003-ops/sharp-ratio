@@ -37,9 +37,6 @@ feature_cols = [col for col in df_copy.columns if col != 'Return']
 
 # 정규화
 # 2. 스케일링 적용
-scaler = StandardScaler()
-df_copy[feature_cols] = scaler.fit_transform(df_copy[feature_cols])
-
 
 # 최적화 및 학습 (GPU 최적화 버전)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,11 +70,6 @@ optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 
 # train data set 준비
-
-# 컬럼 순서 가정: group1...group50 (50개) + Bond (1개) + Return (1개) = 총 52개
-feature_cols = [f'group{i}' for i in range(1, 51)] + ['Bond']
-target_col = ['Return']
-all_cols = feature_cols + target_col
 
 # 0. 설정 값 정의
 PER_SET = 10000
@@ -208,7 +200,6 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
             print(' 학습 종료 ')
             break
 
-        # --- 3. 즉시 중단 조건 (과적합 발생 시) ---
         # best 모델 복원
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
@@ -295,12 +286,11 @@ min_sharpe = sharpe_results.min().item()
 total_test_count = decisions.numel()
 approved_count = int(decisions.sum().item())
 approval_rate = (approved_count / total_test_count) * 100
-approved_returns = test_y.cpu()[decisions.cpu().numpy() == 1]
+approved_returns = test_y.squeeze(-1).cpu()[decisions.cpu() == 1]
 
-if len(approved_returns) > 0:
-    avg_approved_return = approved_returns.mean() * 100  # % 단위로 변환
-else:
-    avg_approved_return = 0.0  # 승인된 대출이 하나도 없을 경우 대비
+
+avg_approved_return = approved_returns.mean().item() * 100
+
 
 # 결과 출력
 print("\n" + "*"*20 + " [ 최종 성적표 ] " + "*"*20)
@@ -313,12 +303,16 @@ print(f"▶ 최고 팀 샤프 지수     : {max_sharpe:.4f}")
 print(f"▶ 최저 팀 샤프 지수     : {min_sharpe:.4f}")
 print("-" * 51)
 print(f"▶ 승인된 대출의 평균 수익률 : {avg_approved_return:.2f} %")
-print("전략 평균수익(mean_ret) 평균:", mean_ret.mean().item())
-print("국채 평균수익(mean_rtsy) 평균:", mean_rtsy.mean().item())
-print("전략 표준편차(std_ret) 평균:", std_ret.mean().item())
-print("샤프(final_sharpe) 평균:", sharpe_results.mean().item())
+print("▶ 전략 평균수익(mean_ret) 평균:", mean_ret.mean().item())
+print("▶ 국채 평균수익(mean_rtsy) 평균:", mean_rtsy.mean().item())
+print("▶ 전략 표준편차(std_ret) 평균:", std_ret.mean().item())
+print("▶ 샤프(final_sharpe) 평균:", sharpe_results.mean().item())
 print("*"*54)
 
 
 
+
+print("승인 표본 수:", approved_returns.numel())
+print("승인 평균(원값):", approved_returns.mean().item())
+print("승인 평균(%):", approved_returns.mean().item() * 100)
 
