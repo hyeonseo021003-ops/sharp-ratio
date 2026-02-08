@@ -48,9 +48,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = nn.Sequential(
     nn.Linear(51, 64),
-    nn.ReLU(), # 활성화 함수: 비선형성을 추가하여 복잡한 패턴 학습
+    nn.LeakyReLU(negative_slope=0.01),
+
     nn.Linear(64, 64),
-    nn.ReLU(), # 활성화 함수: 비선형성을 추가하여 복잡한 패턴 학습
+    nn.LeakyReLU(negative_slope=0.01),
+
+    nn.Linear(64, 64),
+    nn.LeakyReLU(negative_slope=0.01),
+
+    nn.Linear(64, 64),
+    nn.LeakyReLU(negative_slope=0.01),
+
     nn.Linear(64, 2), # 출력층: 64개 정보를 모아 최종적으로 1개의 '점수' 도출
     nn.Softmax(dim=-1) # Sigmoid 대신 Softmax 사용
 ).to(device)
@@ -148,10 +156,10 @@ def criterion(probs_3d, x_3d, y_3d):
 
 
 
-def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000):
+def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, patience=30):
     best_val_loss = float('inf')
     best_model_state = None
-    
+    warning = 0
     train_loss_history = []
     val_loss_history = []
 
@@ -185,19 +193,28 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000):
         train_loss_history.append(t_loss.item())
         val_loss_history.append(v_loss.item())
 
+        print(f"Epoch [{epoch+1:3d}] | Train Loss: {t_loss.item():.4f} | Val Loss: {v_loss.item():.4f}")
+
+
         # 최적 모델 저장 (가장 낮은 Val Loss 기록 시)
         if v_loss < best_val_loss:
             best_val_loss = v_loss
             best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-        print(f"Epoch [{epoch+1:3d}] | Train Loss: {t_loss.item():.4f} | Val Loss: {v_loss.item():.4f}")
+            warning = 0
+        else:
+            warning +=1
+            
+        if warning >= patience:
+            print(' 학습 종료 ')
+            break
 
         # --- 3. 즉시 중단 조건 (과적합 발생 시) ---
-        if v_loss > t_loss:
-            print(f"\n🛑 [중단] Val Loss({v_loss.item():.4f})가 Train Loss({t_loss.item():.4f})를 초과하여 즉시 종료합니다.")
-            if best_model_state:
-                model.load_state_dict(best_model_state)
-            break
+        # best 모델 복원
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+
+    
+            
 
     return train_loss_history, val_loss_history
 
@@ -210,7 +227,7 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000):
 # test
 
 # 1. 데이터를 펴고 모델을 통과시켜 복구하는 함수
-def get_model_predictions(test_x_3d, test_y_3d, threshold=0.6):
+def get_model_predictions(test_x_3d, test_y_3d):
     model.eval() # 평가모드
     with torch.no_grad(): # 기울기 계산 금지 - 메모리, 속도
         # (20, 10000, 51) -> (200000, 51)로 펴기
@@ -228,6 +245,7 @@ def get_model_predictions(test_x_3d, test_y_3d, threshold=0.6):
 
     # 방법 A: argmax 사용 (둘 중 큰 것 선택, threshold 무시됨)
     # dim=-1은 마지막 차원(2개 점수) 중 큰 인덱스를 고름
+    #        = (probs_3d >= 0.5).float() 
     decisions = torch.argmax(probs_3d_full, dim=-1).float() # 결과: (20, 10000)
     
     # 3. 개별 수익률 결정
@@ -242,7 +260,7 @@ def get_model_predictions(test_x_3d, test_y_3d, threshold=0.6):
     # 5. Sharpe Ratio 계산 => 평균 수익률 - 평균 국채 수익률 평균(수익률-국채수익률)
     final_sharpe = (mean_ret - mean_rtsy)/ (std_ret + 1e-8)
     
-    return final_sharpe, decisions
+    return final_sharpe, decisions, mean_ret, mean_rtsy, std_ret
 
 
 
@@ -265,7 +283,7 @@ print(">> 학습 완료!")
 print("\n" + "="*50)
 print(" [Step 2] 테스트 데이터(Test Data) 평가 시작...")
 print("="*50)
-sharpe_results, decisions = get_model_predictions(test_x, test_y, threshold=0.6)
+sharpe_results, decisions, mean_ret, mean_rtsy, std_ret = get_model_predictions(test_x, test_y)
 
 
 
@@ -295,9 +313,11 @@ print(f"▶ 최고 팀 샤프 지수     : {max_sharpe:.4f}")
 print(f"▶ 최저 팀 샤프 지수     : {min_sharpe:.4f}")
 print("-" * 51)
 print(f"▶ 승인된 대출의 평균 수익률 : {avg_approved_return:.2f} %")
+print("전략 평균수익(mean_ret) 평균:", mean_ret.mean().item())
+print("국채 평균수익(mean_rtsy) 평균:", mean_rtsy.mean().item())
+print("전략 표준편차(std_ret) 평균:", std_ret.mean().item())
+print("샤프(final_sharpe) 평균:", sharpe_results.mean().item())
 print("*"*54)
-
-
 
 
 
