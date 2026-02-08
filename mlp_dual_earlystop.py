@@ -25,11 +25,9 @@ target_col = ['Return']
 all_cols = feature_cols + target_col
 
 # 2. 원본 df에서 해당 컬럼들만 추출하여 복사본 생성
-# 24GB 램을 활용해 안전하게 .copy()로 복제합니다.
+# 24GB 램을 활용해 안전하게 .copy()로 복제
 df_copy = df[all_cols].copy()
 
-# 3. 혹시 모를 결측치(NaN) 0으로 채우기
-# df_copy = df_copy.fillna(0)
 
 #------------------------------------------------------------------------------
 
@@ -112,6 +110,14 @@ train_x, train_y = make_3d_tensor(train_idx, train_sets)
 val_x, val_y     = make_3d_tensor(val_idx, val_sets)
 test_x, test_y   = make_3d_tensor(test_idx, test_sets)
 
+
+batch_size = 4  # 한 번에 몇 '팀'을 학습할지 
+train_dataset = TensorDataset(train_x, train_y)  # train_x: (T, N, 51), train_y: (T, N, 1)
+val_dataset   = TensorDataset(val_x, val_y)
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False)
+
 # 결과 확인
 print("✅")
 
@@ -144,7 +150,7 @@ def criterion(probs_3d, x_3d, y_3d):
 
 
 
-def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, patience=30):
+def train_with_early_stopping(model, train_loader, val_loader, optimizer, num_epochs=200, patience=10):
     best_val_loss = float('inf')
     best_model_state = None
     warning = 0
@@ -156,32 +162,44 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
     for epoch in range(num_epochs):
         # --- 1. 학습 단계 (Train Step) ---
         model.train()
-        
+        for bx, by in train_loader:
+            bx = bx.to(device)  # (B, N, 51)
+            by = by.to(device)  # (B, N, 1)
+            N = bx.size(1)  # 팀당 인원 수 (하드코딩 금지)
+
         # Forward: 데이터를 모델에 입력하고 승인 확률 추출
-        t_probs_flat = model(train_x.view(-1, 51))
-        t_probs_3d = t_probs_flat.view(-1, 1000, 2)[:, :, 1]
+        probs_flat = model(bx.reshape(-1, bx.size(-1)))
+        probs_3d = probs_flat.view(-1, N, 2)[:, :, 1]
         
         # Loss 계산: 샤프 지수 기반의 손실함수 최적화
-        t_loss = criterion(t_probs_3d, train_x, train_y)
+        loss = criterion(probs_3d, bx, by)
         
         # Optimization: 가중치 수정 실행
         optimizer.zero_grad() # 기울기 초기화
-        t_loss.backward()    # 역전파 실행
+        loss.backward()    # 역전파 실행
         optimizer.step()     # 가중치 업데이트
         
+        train_loss_history.append(loss.item())
+
+
         # --- 2. 검증 단계 (Validation Step) ---
         model.eval()
         with torch.no_grad():
-            # 검증용 데이터(20팀)로 현재 모델 실력 측정
-            v_probs_flat = model(val_x.view(-1, 51))
-            v_probs_3d = v_probs_flat.view(-1, 1000, 2)[:, :, 1]
-            v_loss = criterion(v_probs_3d, val_x, val_y)
-            
-        # 매 에폭의 결과(Loss) 저장
-        train_loss_history.append(t_loss.item())
-        val_loss_history.append(v_loss.item())
+            for vx, vy in val_loader:
+                vx = vx.to(device)
+                vy = vy.to(device)
 
-        print(f"Epoch [{epoch+1:3d}] | Train Loss: {t_loss.item():.4f} | Val Loss: {v_loss.item():.4f}")
+                N = vx.size(1)
+            # 검증용 데이터(20팀)로 현재 모델 실력 측정
+            v_probs_flat = model(vx.reshape(-1, vx.size(-1)))
+            v_probs_3d = v_probs_flat.view(-1, N, 2)[:, :, 1]
+            v_loss = criterion(v_probs_3d, vx, vy)
+            
+            # 매 에폭의 결과(Loss) 저장
+        
+            val_loss_history.append(v_loss.item())
+
+        print(f"Epoch [{epoch+1:3d}] | Train Loss: {loss.item():.4f} | Val Loss: {v_loss.item():.4f}")
 
 
         # 최적 모델 저장 (가장 낮은 Val Loss 기록 시)
@@ -189,6 +207,7 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
             best_val_loss = v_loss
             best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
             warning = 0
+            torch.save(model.state_dict(), "best_model.pth")
         else:
             warning +=1
             
@@ -199,7 +218,7 @@ def train_with_early_stopping(train_x, train_y, val_x, val_y, num_epochs=1000, p
    
             
 
-    return train_loss_history, val_loss_history
+    return train_loss_history, val_loss_history, best_val_loss
 
 
 
@@ -255,11 +274,13 @@ print("\n" + "="*50)
 print(" [Step 1] 모델 학습(Training) 시작 (Early Stopping 적용)...")
 print("="*50)
 loss_history = train_with_early_stopping(
-    train_x,  
-    train_y, 
-    val_x,    
-    val_y, 
-    num_epochs=300)
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    optimizer=optimizer,
+    num_epochs=300,
+    patience=20
+)
 print(">> 학습 완료!")
 
 # 2. 테스트 데이터 결과 도출
