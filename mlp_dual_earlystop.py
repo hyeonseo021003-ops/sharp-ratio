@@ -37,23 +37,22 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 model = nn.Sequential(
-    nn.Linear(51, 64),
+    nn.Linear(51, 256),
     nn.LeakyReLU(negative_slope=0.01),
 
-    nn.Linear(64, 64),
+    nn.Linear(256, 256),
     nn.LeakyReLU(negative_slope=0.01),
 
-    nn.Linear(64, 64),
+    nn.Linear(256, 256),
     nn.LeakyReLU(negative_slope=0.01),
 
-    nn.Linear(64, 64),
+    nn.Linear(256, 256),
     nn.LeakyReLU(negative_slope=0.01),
 
-    nn.Linear(64, 2), # 출력층: 64개 정보를 모아 최종적으로 1개의 '점수' 도출
+    nn.Linear(256, 2), # 출력층: 64개 정보를 모아 최종적으로 1개의 '점수' 도출
     nn.Softmax(dim=-1) # Sigmoid 대신 Softmax 사용
 ).to(device)
 
-###### 여기에 자비어 넣기
 
 # 최적화 도구: Adam을 사용하며, 학습률(lr)은 0.001로 설정
 optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -111,7 +110,7 @@ val_x, val_y     = make_3d_tensor(val_idx, val_sets)
 test_x, test_y   = make_3d_tensor(test_idx, test_sets)
 
 
-batch_size = 4  # 한 번에 몇 '팀'을 학습할지 
+batch_size = 34  # 한 번에 몇 '팀'을 학습할지 
 train_dataset = TensorDataset(train_x, train_y)  # train_x: (T, N, 51), train_y: (T, N, 1)
 val_dataset   = TensorDataset(val_x, val_y)
 
@@ -150,7 +149,7 @@ def criterion(probs_3d, x_3d, y_3d):
 
 
 
-def train_with_early_stopping(model, train_loader, val_loader, optimizer, num_epochs=200, patience=10):
+def train_with_early_stopping(model, train_loader, val_loader, optimizer, num_epochs=200, patience=30):
     best_val_loss = float('inf')
     best_model_state = None
     warning = 0
@@ -190,14 +189,14 @@ def train_with_early_stopping(model, train_loader, val_loader, optimizer, num_ep
                 vy = vy.to(device)
 
                 N = vx.size(1)
-            # 검증용 데이터(20팀)로 현재 모델 실력 측정
-            v_probs_flat = model(vx.reshape(-1, vx.size(-1)))
-            v_probs_3d = v_probs_flat.view(-1, N, 2)[:, :, 1]
-            v_loss = criterion(v_probs_3d, vx, vy)
+                # 검증용 데이터(20팀)로 현재 모델 실력 측정
+                v_probs_flat = model(vx.reshape(-1, vx.size(-1)))
+                v_probs_3d = v_probs_flat.view(-1, N, 2)[:, :, 1]
+                v_loss = criterion(v_probs_3d, vx, vy)
             
-            # 매 에폭의 결과(Loss) 저장
+                # 매 에폭의 결과(Loss) 저장
         
-            val_loss_history.append(v_loss.item())
+                val_loss_history.append(v_loss.item())
 
         print(f"Epoch [{epoch+1:3d}] | Train Loss: {loss.item():.4f} | Val Loss: {v_loss.item():.4f}")
 
@@ -245,7 +244,6 @@ def get_model_predictions(test_x_3d, test_y_3d):
         r_tsy_3d = test_x_3d[:, :, -1] # 국채 수익률 분리
         actual_ret_3d = test_y_3d.squeeze(-1) # 실제 수익률
 
-    # 방법 A: argmax 사용 (둘 중 큰 것 선택, threshold 무시됨)
     # dim=-1은 마지막 차원(2개 점수) 중 큰 인덱스를 고름
     #        = (probs_3d >= 0.5).float() 
     decisions = torch.argmax(probs_3d_full, dim=-1).float() # 결과: (20, 1000)
@@ -278,8 +276,8 @@ loss_history = train_with_early_stopping(
     train_loader=train_loader,
     val_loader=val_loader,
     optimizer=optimizer,
-    num_epochs=300,
-    patience=20
+    num_epochs=1000,
+    patience=30
 )
 print(">> 학습 완료!")
 
